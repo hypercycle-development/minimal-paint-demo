@@ -185,7 +185,17 @@ const DrawLayer = {
 const HomePage = {
   oninit(vnode) {
     this.layers = [
-      { id: 1, name: 'Layer 1', visible: true, offsetX: 0, offsetY: 0, isGenerating: false }
+      {
+        id: 1,
+        name: 'Layer 1',
+        visible: true,
+        offsetX: 0,
+        offsetY: 0,
+        isGenerating: false,
+        aiPrompt: '',
+        aiNegativePrompt: '',
+        isAiGenerated: false
+      }
     ];
     this.activeLayerId = 1;
     this.nextLayerId = 2;
@@ -209,6 +219,16 @@ const HomePage = {
     return this.layers.find(layer => layer.id === this.activeLayerId);
   },
 
+  setActiveLayer(layerId) {
+    this.activeLayerId = layerId;
+    // Load the AI prompts from the newly selected layer
+    const layer = this.layers.find(l => l.id === layerId);
+    if (layer) {
+      this.generatePrompt = layer.aiPrompt || '';
+      this.generateNegativePrompt = layer.aiNegativePrompt || '';
+    }
+  },
+
   addLayer() {
     const newLayer = {
       id: this.nextLayerId++,
@@ -216,10 +236,13 @@ const HomePage = {
       visible: true,
       offsetX: 0,
       offsetY: 0,
-      isGenerating: false
+      isGenerating: false,
+      aiPrompt: '',
+      aiNegativePrompt: '',
+      isAiGenerated: false
     };
     this.layers.push(newLayer);
-    this.activeLayerId = newLayer.id;
+    this.setActiveLayer(newLayer.id);
   },
 
   removeLayer() {
@@ -232,11 +255,13 @@ const HomePage = {
     this.layerRefs.delete(this.activeLayerId);
 
     // Set active layer to the previous one or first available
+    let newActiveId;
     if (index > 0) {
-      this.activeLayerId = this.layers[index - 1].id;
+      newActiveId = this.layers[index - 1].id;
     } else {
-      this.activeLayerId = this.layers[0].id;
+      newActiveId = this.layers[0].id;
     }
+    this.setActiveLayer(newActiveId);
   },
 
   toggleLayerVisibility(layerId) {
@@ -334,6 +359,10 @@ const HomePage = {
     const activeLayer = this.getActiveLayer();
     if (!activeLayer) return;
 
+    // Store the prompts in the layer before generating
+    activeLayer.aiPrompt = this.generatePrompt;
+    activeLayer.aiNegativePrompt = this.generateNegativePrompt;
+
     // Mark layer as generating
     activeLayer.isGenerating = true;
     m.redraw();
@@ -364,9 +393,9 @@ const HomePage = {
       if (data.status === 'ok') {
         // Load the generated image into the layer
         await this.loadImageToLayer(activeLayer.id, data.file);
-        // Clear prompts after successful generation
-        this.generatePrompt = '';
-        this.generateNegativePrompt = '';
+        // Mark as AI generated
+        activeLayer.isAiGenerated = true;
+        // Don't clear prompts - keep them for editing/regenerating
       } else {
         console.error('Generation failed:', data.message);
         alert('Generation failed: ' + data.message);
@@ -530,10 +559,13 @@ const HomePage = {
                       onclick: () => this.toggleLayerVisibility(layer.id)
                     }, layer.visible ? '👁️' : '👁️‍🗨️'),
                     m('span.text-sm.cursor-pointer.font-medium', {
-                      onclick: () => { this.activeLayerId = layer.id; },
+                      onclick: () => this.setActiveLayer(layer.id),
                       class: layer.isGenerating ? 'text-purple-600 animate-pulse' :
                              (layer.id === this.activeLayerId ? 'text-blue-800' : 'text-gray-700')
-                    }, layer.isGenerating ? `${layer.name} (generating...)` : layer.name)
+                    }, [
+                      layer.isGenerating ? `${layer.name} (generating...)` : layer.name,
+                      layer.isAiGenerated ? m('span.ml-1.text-xs.px-1.bg-purple-100.text-purple-700.rounded', '🤖') : null
+                    ])
                   ]),
                   m('button.text-red-500.text-sm', {
                     onclick: () => this.removeLayer(),
