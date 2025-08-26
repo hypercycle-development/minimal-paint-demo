@@ -185,7 +185,7 @@ const DrawLayer = {
 const HomePage = {
   oninit(vnode) {
     this.layers = [
-      { id: 1, name: 'Layer 1', visible: true, offsetX: 0, offsetY: 0 }
+      { id: 1, name: 'Layer 1', visible: true, offsetX: 0, offsetY: 0, isGenerating: false }
     ];
     this.activeLayerId = 1;
     this.nextLayerId = 2;
@@ -197,6 +197,12 @@ const HomePage = {
 
     this.canvasWidth = 800;
     this.canvasHeight = 600;
+
+    // AI Generation
+    this.showGenerateModal = false;
+    this.generatePrompt = '';
+    this.generateNegativePrompt = '';
+    this.apiUrl = 'http://24.52.241.22:4000';
   },
 
   getActiveLayer() {
@@ -209,7 +215,8 @@ const HomePage = {
       name: `Layer ${this.nextLayerId - 1}`,
       visible: true,
       offsetX: 0,
-      offsetY: 0
+      offsetY: 0,
+      isGenerating: false
     };
     this.layers.push(newLayer);
     this.activeLayerId = newLayer.id;
@@ -261,6 +268,154 @@ const HomePage = {
     }
   },
 
+  openGenerateModal() {
+    this.showGenerateModal = true;
+    this.generatePrompt = '';
+    this.generateNegativePrompt = '';
+  },
+
+  closeGenerateModal() {
+    this.showGenerateModal = false;
+  },
+
+  async generateImage() {
+    if (!this.generatePrompt.trim()) return;
+
+    const activeLayer = this.getActiveLayer();
+    if (!activeLayer) return;
+
+    // Mark layer as generating
+    activeLayer.isGenerating = true;
+    this.closeGenerateModal();
+    m.redraw();
+
+    try {
+      const response = await fetch(`${this.apiUrl}/request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: this.generatePrompt,
+          negative_prompt: this.generateNegativePrompt,
+          width: this.canvasWidth,
+          height: this.canvasHeight,
+          steps: 30,
+          guidance_scale: 7.0,
+          disable_safety: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status === 'ok') {
+        // Load the generated image into the layer
+        await this.loadImageToLayer(activeLayer.id, data.file);
+      } else {
+        console.error('Generation failed:', data.message);
+        alert('Generation failed: ' + data.message);
+      }
+    } catch (error) {
+      console.error('Generation error:', error);
+      alert('Generation error: ' + error.message);
+    } finally {
+      activeLayer.isGenerating = false;
+      m.redraw();
+    }
+  },
+
+  async generateImageInline() {
+    if (!this.generatePrompt.trim()) return;
+
+    const activeLayer = this.getActiveLayer();
+    if (!activeLayer) return;
+
+    // Mark layer as generating
+    activeLayer.isGenerating = true;
+    m.redraw();
+
+    try {
+      const response = await fetch(`${this.apiUrl}/request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: this.generatePrompt,
+          negative_prompt: this.generateNegativePrompt,
+          width: this.canvasWidth,
+          height: this.canvasHeight,
+          steps: 30,
+          guidance_scale: 7.0,
+          disable_safety: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status === 'ok') {
+        // Load the generated image into the layer
+        await this.loadImageToLayer(activeLayer.id, data.file);
+        // Clear prompts after successful generation
+        this.generatePrompt = '';
+        this.generateNegativePrompt = '';
+      } else {
+        console.error('Generation failed:', data.message);
+        alert('Generation failed: ' + data.message);
+      }
+    } catch (error) {
+      console.error('Generation error:', error);
+      alert('Generation error: ' + error.message);
+    } finally {
+      activeLayer.isGenerating = false;
+      m.redraw();
+    }
+  },
+
+  async loadImageToLayer(layerId, base64Data) {
+    return new Promise((resolve, reject) => {
+      const layer = this.layers.find(l => l.id === layerId);
+      const layerRef = this.layerRefs.get(layerId);
+
+      if (!layer || !layerRef) {
+        reject(new Error('Layer not found'));
+        return;
+      }
+
+      const img = new Image();
+      img.onload = () => {
+        // Clear the layer first
+        layerRef.clear({
+          canvasWidth: this.canvasWidth,
+          canvasHeight: this.canvasHeight
+        });
+
+        // Draw the generated image
+        layerRef.ctx.drawImage(img, 0, 0, this.canvasWidth, this.canvasHeight);
+
+        // Recalculate bounding box
+        layerRef.calculateBoundingBox();
+
+        m.redraw();
+        resolve();
+      };
+
+      img.onerror = (error) => {
+        reject(error);
+      };
+
+      img.src = `data:image/png;base64,${base64Data}`;
+    });
+  },
+
   view(vnode) {
     return m('.max-w-6xl.mx-auto.px-4.py-8', [
       m('h1.text-3xl.font-bold.text-gray-900.text-center.mb-8', 'Paint Demo'),
@@ -308,7 +463,13 @@ const HomePage = {
         // Clear button
         m('button.px-3.py-1.bg-red-500.text-white.rounded.text-sm', {
           onclick: () => this.clearActiveLayer()
-        }, 'Clear Layer')
+        }, 'Clear Layer'),
+
+        // Generate AI button
+        m('button.px-3.py-1.bg-purple-500.text-white.rounded.text-sm', {
+          onclick: () => this.openGenerateModal(),
+          disabled: this.getActiveLayer()?.isGenerating
+        }, this.getActiveLayer()?.isGenerating ? 'Generating...' : 'AI Generate')
       ]),
 
       // Main content area
@@ -355,30 +516,68 @@ const HomePage = {
           ]),
 
           // Layer list
-          m('.space-y-2', [
+          m('.space-y-2.mb-4', [
             // Render layers in reverse order (top to bottom in UI)
             this.layers.slice().reverse().map(layer =>
               m('.bg-white.p-2.rounded.border', {
                 key: layer.id,
-                class: layer.id === this.activeLayerId ? 'border-blue-500.bg-blue-50' : 'border-gray-200'
+                class: layer.id === this.activeLayerId ?
+                  'border-blue-500.bg-blue-100.shadow-md' : 'border-gray-200.hover:border-gray-300'
               }, [
                 m('.flex.justify-between.items-center', [
                   m('.flex.items-center.gap-2', [
                     m('button.text-sm', {
                       onclick: () => this.toggleLayerVisibility(layer.id)
                     }, layer.visible ? '👁️' : '👁️‍🗨️'),
-                    m('span.text-sm.cursor-pointer', {
-                      onclick: () => { this.activeLayerId = layer.id; }
-                    }, layer.name)
+                    m('span.text-sm.cursor-pointer.font-medium', {
+                      onclick: () => { this.activeLayerId = layer.id; },
+                      class: layer.isGenerating ? 'text-purple-600 animate-pulse' :
+                             (layer.id === this.activeLayerId ? 'text-blue-800' : 'text-gray-700')
+                    }, layer.isGenerating ? `${layer.name} (generating...)` : layer.name)
                   ]),
                   m('button.text-red-500.text-sm', {
                     onclick: () => this.removeLayer(),
                     disabled: this.layers.length <= 1,
-                    class: this.layers.length <= 1 ? 'opacity-50.cursor-not-allowed' : 'hover:bg-red-100'
+                    class: this.layers.length <= 1 ? 'opacity-50.cursor-not-allowed' : 'hover:bg-red-100.rounded'
                   }, '🗑️')
                 ])
               ])
             )
+          ]),
+
+          // AI Generation Controls for Active Layer
+          m('.border-t.pt-4', [
+            m('h4.text-sm.font-medium.mb-3.text-gray-700', 'AI Generate (Active Layer)'),
+
+            m('.space-y-2', [
+              // Prompt input
+              m('textarea.w-full.p-2.text-xs.border.rounded.resize-none', {
+                rows: 2,
+                placeholder: 'Enter prompt...',
+                value: this.generatePrompt,
+                oninput: (e) => { this.generatePrompt = e.target.value; }
+              }),
+
+              // Negative prompt input
+              m('textarea.w-full.p-2.text-xs.border.rounded.resize-none', {
+                rows: 2,
+                placeholder: 'Negative prompt (optional)...',
+                value: this.generateNegativePrompt,
+                oninput: (e) => { this.generateNegativePrompt = e.target.value; }
+              }),
+
+              // Generate button
+              m('button.w-full.px-3.py-2.bg-purple-500.text-white.rounded.text-sm.font-medium', {
+                onclick: () => this.generateImageInline(),
+                disabled: !this.generatePrompt.trim() || this.getActiveLayer()?.isGenerating,
+                class: (!this.generatePrompt.trim() || this.getActiveLayer()?.isGenerating) ?
+                  'opacity-50.cursor-not-allowed' : 'hover:bg-purple-600'
+              }, this.getActiveLayer()?.isGenerating ? 'Generating...' : 'Generate Image'),
+
+              // Size info
+              m('.text-xs.text-gray-500.text-center',
+                `${this.canvasWidth} × ${this.canvasHeight}px`)
+            ])
           ]),
 
           // Layer info
@@ -398,12 +597,62 @@ const HomePage = {
           m('li', 'Choose color and brush size (pen/eraser only)'),
           m('li', 'Click and drag on the canvas to draw or move'),
           m('li', 'Move tool: highlights bounding box and repositions the active layer'),
+          m('li', 'AI Generate: create content using AI prompts'),
           m('li', 'Use layers panel to add/remove/toggle layers'),
           m('li', 'Click on a layer name to make it active'),
           m('li', 'Eye icon toggles layer visibility'),
           m('li', 'Only the active layer receives drawing/moving input')
         ])
-      ])
+      ]),
+
+      // Generate Modal
+      this.showGenerateModal ? m('.fixed.inset-0.bg-black.bg-opacity-50.flex.items-center.justify-center.z-50', {
+        onclick: (e) => {
+          if (e.target === e.currentTarget) this.closeGenerateModal();
+        }
+      }, [
+        m('.bg-white.rounded-lg.p-6.max-w-md.w-full.mx-4', [
+          m('h3.text-lg.font-bold.mb-4', 'Generate AI Image'),
+
+          m('.space-y-4', [
+            m('.space-y-2', [
+              m('label.block.text-sm.font-medium', 'Prompt (required)'),
+              m('textarea.w-full.p-2.border.rounded.resize-none', {
+                rows: 3,
+                placeholder: 'Describe what you want to generate...',
+                value: this.generatePrompt,
+                oninput: (e) => { this.generatePrompt = e.target.value; }
+              })
+            ]),
+
+            m('.space-y-2', [
+              m('label.block.text-sm.font-medium', 'Negative Prompt (optional)'),
+              m('textarea.w-full.p-2.border.rounded.resize-none', {
+                rows: 2,
+                placeholder: 'What you don\'t want in the image...',
+                value: this.generateNegativePrompt,
+                oninput: (e) => { this.generateNegativePrompt = e.target.value; }
+              })
+            ]),
+
+            m('.text-sm.text-gray-600', [
+              m('p', `Image size: ${this.canvasWidth} × ${this.canvasHeight}px`),
+              m('p', 'This will replace any existing content on the active layer.')
+            ])
+          ]),
+
+          m('.flex.justify-end.gap-2.mt-6', [
+            m('button.px-4.py-2.border.rounded.text-gray-600', {
+              onclick: () => this.closeGenerateModal()
+            }, 'Cancel'),
+            m('button.px-4.py-2.bg-purple-500.text-white.rounded', {
+              onclick: () => this.generateImage(),
+              disabled: !this.generatePrompt.trim(),
+              class: !this.generatePrompt.trim() ? 'opacity-50.cursor-not-allowed' : 'hover:bg-purple-600'
+            }, 'Generate')
+          ])
+        ])
+      ]) : null
     ]);
   }
 };
