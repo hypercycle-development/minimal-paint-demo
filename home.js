@@ -213,6 +213,14 @@ const HomePage = {
     this.generatePrompt = '';
     this.generateNegativePrompt = '';
     this.apiUrl = 'http://24.52.241.22:4000';
+
+    // Drag and drop
+    this.dragState = {
+      isDragging: false,
+      dragLayerId: null,
+      dragStartY: 0,
+      dragOverIndex: null
+    };
   },
 
   getActiveLayer() {
@@ -445,6 +453,72 @@ const HomePage = {
     });
   },
 
+  // Drag and drop methods
+  startDrag(e, layerId) {
+    this.dragState.isDragging = true;
+    this.dragState.dragLayerId = layerId;
+    this.dragState.dragStartY = e.clientY;
+    this.dragState.dragOverIndex = null;
+
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', layerId.toString());
+
+    // Add a slight delay before showing drag feedback
+    setTimeout(() => {
+      if (this.dragState.isDragging) {
+        m.redraw();
+      }
+    }, 50);
+  },
+
+  dragOver(e, index) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+
+    if (this.dragState.isDragging) {
+      this.dragState.dragOverIndex = index;
+      m.redraw();
+    }
+  },
+
+  dragLeave(e) {
+    // Only clear dragOverIndex if we're actually leaving the drop zone
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      this.dragState.dragOverIndex = null;
+      m.redraw();
+    }
+  },
+
+  drop(e, targetIndex) {
+    e.preventDefault();
+
+    if (!this.dragState.isDragging || this.dragState.dragLayerId === null) return;
+
+    const dragLayerId = this.dragState.dragLayerId;
+    const dragLayerIndex = this.layers.findIndex(l => l.id === dragLayerId);
+
+    if (dragLayerIndex === -1) return;
+
+    // Remove the dragged layer from its current position
+    const [draggedLayer] = this.layers.splice(dragLayerIndex, 1);
+
+    // Insert it at the new position
+    this.layers.splice(targetIndex, 0, draggedLayer);
+
+    this.endDrag();
+  },
+
+  endDrag() {
+    this.dragState.isDragging = false;
+    this.dragState.dragLayerId = null;
+    this.dragState.dragOverIndex = null;
+    m.redraw();
+  },
+
   view(vnode) {
     return m('.max-w-6xl.mx-auto.px-4.py-8', [
       m('h1.text-3xl.font-bold.text-gray-900.text-center.mb-8', 'Paint Demo'),
@@ -547,64 +621,117 @@ const HomePage = {
           // Layer list
           m('.space-y-2.mb-4', [
             // Render layers in reverse order (top to bottom in UI)
-            this.layers.slice().reverse().map(layer =>
-              m('.bg-white.p-2.rounded.border', {
-                key: layer.id,
-                class: layer.id === this.activeLayerId ?
-                  'border-blue-500.bg-blue-100.shadow-md' : 'border-gray-200.hover:border-gray-300'
+            this.layers.slice().reverse().map((layer, reverseIndex) => {
+              const actualIndex = this.layers.length - 1 - reverseIndex;
+              const isDragging = this.dragState.dragLayerId === layer.id;
+              const isDropTarget = this.dragState.dragOverIndex === actualIndex;
+
+              return m('.relative', {
+                key: layer.id
               }, [
-                m('.flex.justify-between.items-center', [
-                  m('.flex.items-center.gap-2', [
-                    m('button.text-sm', {
-                      onclick: () => this.toggleLayerVisibility(layer.id)
-                    }, layer.visible ? '👁️' : '👁️‍🗨️'),
-                    m('span.text-sm.cursor-pointer.font-medium', {
-                      onclick: () => this.setActiveLayer(layer.id),
-                      class: layer.isGenerating ? 'text-purple-600 animate-pulse' :
-                             (layer.id === this.activeLayerId ? 'text-blue-800' : 'text-gray-700')
-                    }, [
-                      layer.isGenerating ? `${layer.name} (generating...)` : layer.name,
-                      layer.isAiGenerated ? m('span.ml-1.text-xs.px-1.bg-purple-100.text-purple-700.rounded', '🤖') : null
-                    ])
-                  ]),
-                  m('button.text-red-500.text-sm', {
-                    onclick: () => this.removeLayer(),
-                    disabled: this.layers.length <= 1,
-                    class: this.layers.length <= 1 ? 'opacity-50.cursor-not-allowed' : 'hover:bg-red-100.rounded'
-                  }, '🗑️')
-                ])
-              ])
-            )
+                // Drop indicator line (above)
+                isDropTarget && this.dragState.isDragging ?
+                  m('.absolute.-top-1.left-0.right-0.h-0.5.bg-blue-500.z-10') : null,
+
+                // Layer item
+                m('.bg-white.p-2.rounded.border.transition-all.duration-150', {
+                  draggable: true,
+                  class: [
+                    layer.id === this.activeLayerId ?
+                      'border-blue-500.bg-blue-100.shadow-md' : 'border-gray-200.hover:border-gray-300',
+                    isDragging ? 'opacity-50.scale-95.rotate-1' : '',
+                    isDropTarget ? 'border-blue-400.bg-blue-50' : ''
+                  ].filter(Boolean).join(' '),
+                  ondragstart: (e) => this.startDrag(e, layer.id),
+                  ondragover: (e) => this.dragOver(e, actualIndex),
+                  ondragleave: (e) => this.dragLeave(e),
+                  ondrop: (e) => this.drop(e, actualIndex),
+                  ondragend: () => this.endDrag()
+                }, [
+                  m('.flex.justify-between.items-center', [
+                    m('.flex.items-center.gap-2', [
+                      // Drag handle
+                      m('.cursor-move.text-gray-400.hover:text-gray-600.px-1', {
+                        title: 'Drag to reorder'
+                      }, '⋮⋮'),
+
+                      m('button.text-sm', {
+                        onclick: () => this.toggleLayerVisibility(layer.id)
+                      }, layer.visible ? '👁️' : '👁️‍🗨️'),
+
+                      m('span.text-sm.cursor-pointer.font-medium.flex-1', {
+                        onclick: () => this.setActiveLayer(layer.id),
+                        class: layer.isGenerating ? 'text-purple-600 animate-pulse' :
+                               (layer.id === this.activeLayerId ? 'text-blue-800' : 'text-gray-700')
+                      }, [
+                        layer.isGenerating ? `${layer.name} (generating...)` : layer.name,
+                        layer.isAiGenerated ? m('span.ml-1.text-xs.px-1.bg-purple-100.text-purple-700.rounded', '🤖') : null
+                      ])
+                    ]),
+                    m('button.text-red-500.text-sm', {
+                      onclick: () => this.removeLayer(),
+                      disabled: this.layers.length <= 1,
+                      class: this.layers.length <= 1 ? 'opacity-50.cursor-not-allowed' : 'hover:bg-red-100.rounded'
+                    }, '🗑️')
+                  ])
+                ]),
+
+                // Drop indicator line (below for last item)
+                (reverseIndex === this.layers.length - 1 && isDropTarget && this.dragState.isDragging) ?
+                  m('.absolute.-bottom-1.left-0.right-0.h-0.5.bg-blue-500.z-10') : null
+              ]);
+            })
           ]),
 
           // AI Generation Controls for Active Layer
           m('.border-t.pt-4', [
-            m('h4.text-sm.font-medium.mb-3.text-gray-700', 'AI Generate (Active Layer)'),
+            m('h4.text-sm.font-medium.mb-3.text-gray-700', [
+              'AI Generate (Active Layer)',
+              this.getActiveLayer()?.isAiGenerated ?
+                m('span.ml-2.text-xs.px-2.py-1.bg-purple-100.text-purple-700.rounded', '🤖 AI Layer') : null
+            ]),
 
             m('.space-y-2', [
               // Prompt input
               m('textarea.w-full.p-2.text-xs.border.rounded.resize-none', {
                 rows: 2,
-                placeholder: 'Enter prompt...',
+                placeholder: this.getActiveLayer()?.isAiGenerated ?
+                  'Edit prompt to regenerate...' : 'Enter prompt...',
                 value: this.generatePrompt,
-                oninput: (e) => { this.generatePrompt = e.target.value; }
+                oninput: (e) => {
+                  this.generatePrompt = e.target.value;
+                  // Update the current layer's stored prompt as user types
+                  const activeLayer = this.getActiveLayer();
+                  if (activeLayer) {
+                    activeLayer.aiPrompt = e.target.value;
+                  }
+                }
               }),
 
               // Negative prompt input
               m('textarea.w-full.p-2.text-xs.border.rounded.resize-none', {
                 rows: 2,
-                placeholder: 'Negative prompt (optional)...',
+                placeholder: this.getActiveLayer()?.isAiGenerated ?
+                  'Edit negative prompt...' : 'Negative prompt (optional)...',
                 value: this.generateNegativePrompt,
-                oninput: (e) => { this.generateNegativePrompt = e.target.value; }
+                oninput: (e) => {
+                  this.generateNegativePrompt = e.target.value;
+                  // Update the current layer's stored negative prompt as user types
+                  const activeLayer = this.getActiveLayer();
+                  if (activeLayer) {
+                    activeLayer.aiNegativePrompt = e.target.value;
+                  }
+                }
               }),
 
-              // Generate button
+              // Generate/Regenerate button
               m('button.w-full.px-3.py-2.bg-purple-500.text-white.rounded.text-sm.font-medium', {
                 onclick: () => this.generateImageInline(),
                 disabled: !this.generatePrompt.trim() || this.getActiveLayer()?.isGenerating,
                 class: (!this.generatePrompt.trim() || this.getActiveLayer()?.isGenerating) ?
                   'opacity-50.cursor-not-allowed' : 'hover:bg-purple-600'
-              }, this.getActiveLayer()?.isGenerating ? 'Generating...' : 'Generate Image'),
+              }, this.getActiveLayer()?.isGenerating ? 'Generating...' :
+                 (this.getActiveLayer()?.isAiGenerated ? 'Regenerate Image' : 'Generate Image')),
 
               // Size info
               m('.text-xs.text-gray-500.text-center',
@@ -630,6 +757,7 @@ const HomePage = {
           m('li', 'Click and drag on the canvas to draw or move'),
           m('li', 'Move tool: highlights bounding box and repositions the active layer'),
           m('li', 'AI Generate: create content using AI prompts'),
+          m('li', 'Drag the ⋮⋮ handle to reorder layers'),
           m('li', 'Use layers panel to add/remove/toggle layers'),
           m('li', 'Click on a layer name to make it active'),
           m('li', 'Eye icon toggles layer visibility'),
