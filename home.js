@@ -1,186 +1,8 @@
 // home.js
+import DrawLayer from './DrawLayer.js';
+
 const m = window.m;
 
-const DrawLayer = {
-  oninit(vnode) {
-    this.canvas = null;
-    this.ctx = null;
-    this.isDrawing = false;
-    this.isMoving = false;
-    this.lastX = 0;
-    this.lastY = 0;
-    this.moveStartX = 0;
-    this.moveStartY = 0;
-    this.offsetX = 0;
-    this.offsetY = 0;
-    this.boundingBox = null;
-  },
-
-  oncreate(vnode) {
-    this.canvas = vnode.dom;
-    this.ctx = this.canvas.getContext('2d');
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
-
-    // Calculate initial bounding box
-    this.calculateBoundingBox();
-  },
-
-  calculateBoundingBox() {
-    if (!this.ctx) return;
-
-    const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-    const data = imageData.data;
-
-    let minX = this.canvas.width;
-    let minY = this.canvas.height;
-    let maxX = 0;
-    let maxY = 0;
-    let hasContent = false;
-
-    for (let y = 0; y < this.canvas.height; y++) {
-      for (let x = 0; x < this.canvas.width; x++) {
-        const alpha = data[(y * this.canvas.width + x) * 4 + 3];
-        if (alpha > 0) {
-          hasContent = true;
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
-        }
-      }
-    }
-
-    if (hasContent) {
-      this.boundingBox = {
-        x: minX,
-        y: minY,
-        width: maxX - minX + 1,
-        height: maxY - minY + 1
-      };
-    } else {
-      this.boundingBox = null;
-    }
-  },
-
-  getMousePos(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
-  },
-
-  startDrawing(e, attrs) {
-    const { layer, tool, isActive } = attrs;
-    if (!isActive || !layer.visible) return;
-
-    const pos = this.getMousePos(e);
-
-    if (tool === 'move') {
-      this.isMoving = true;
-      this.moveStartX = pos.x;
-      this.moveStartY = pos.y;
-    } else {
-      this.isDrawing = true;
-      this.lastX = pos.x;
-      this.lastY = pos.y;
-    }
-
-    e.preventDefault();
-  },
-
-  draw(e, attrs) {
-    const { layer, tool, brushSize, color, isActive, onLayerMove } = attrs;
-    if (!isActive || !layer.visible) return;
-
-    const pos = this.getMousePos(e);
-
-    if (tool === 'move' && this.isMoving) {
-      const deltaX = pos.x - this.moveStartX;
-      const deltaY = pos.y - this.moveStartY;
-
-      // Update layer offset through parent component
-      onLayerMove && onLayerMove(layer.id, deltaX, deltaY);
-
-    } else if (this.isDrawing && tool !== 'move') {
-      this.ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-      this.ctx.strokeStyle = tool === 'pen' ? color : 'rgba(0,0,0,1)';
-      this.ctx.lineWidth = brushSize;
-
-      this.ctx.beginPath();
-      this.ctx.moveTo(this.lastX, this.lastY);
-      this.ctx.lineTo(pos.x, pos.y);
-      this.ctx.stroke();
-
-      this.lastX = pos.x;
-      this.lastY = pos.y;
-
-      // Recalculate bounding box after drawing
-      this.calculateBoundingBox();
-    }
-
-    e.preventDefault();
-  },
-
-  stopDrawing(e) {
-    this.isDrawing = false;
-    this.isMoving = false;
-    e && e.preventDefault();
-  },
-
-  clear(attrs) {
-    if (this.ctx) {
-      const { canvasWidth, canvasHeight } = attrs;
-      this.ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-      this.boundingBox = null;
-    }
-  },
-
-  view(vnode) {
-    const { layer, tool, canvasWidth, canvasHeight, zIndex, isActive } = vnode.attrs;
-
-    const getCursor = () => {
-      if (tool === 'move') return 'move';
-      if (tool === 'pen') return 'crosshair';
-      if (tool === 'eraser') return 'grab';
-      return 'default';
-    };
-
-    return [
-      // Main canvas
-      m('canvas', {
-        width: canvasWidth,
-        height: canvasHeight,
-        style: `
-          position: absolute;
-          top: ${layer.offsetY || 0}px;
-          left: ${layer.offsetX || 0}px;
-          z-index: ${zIndex};
-          display: ${layer.visible ? 'block' : 'none'};
-          cursor: ${getCursor()};
-          pointer-events: ${isActive ? 'auto' : 'none'};
-        `,
-        onmousedown: (e) => this.startDrawing(e, vnode.attrs),
-        onmousemove: (e) => this.draw(e, vnode.attrs),
-        onmouseup: (e) => this.stopDrawing(e),
-        onmouseleave: (e) => this.stopDrawing(e)
-      }),
-
-      // Bounding box overlay (only for active layer in move mode)
-      (isActive && tool === 'move' && this.boundingBox && layer.visible) ?
-        m('.absolute.border-2.border-dashed.border-blue-500.bg-blue-100.bg-opacity-20.pointer-events-none', {
-          style: `
-            left: ${(layer.offsetX || 0) + this.boundingBox.x}px;
-            top: ${(layer.offsetY || 0) + this.boundingBox.y}px;
-            width: ${this.boundingBox.width}px;
-            height: ${this.boundingBox.height}px;
-            z-index: ${zIndex + 1000};
-          `
-        }) : null
-    ];
-  }
-};
 
 const HomePage = {
   oninit(vnode) {
@@ -194,7 +16,8 @@ const HomePage = {
         isGenerating: false,
         aiPrompt: '',
         aiNegativePrompt: '',
-        isAiGenerated: false
+        isAiGenerated: false,
+        useImg2Img: false
       }
     ];
     this.activeLayerId = 1;
@@ -212,6 +35,7 @@ const HomePage = {
     this.showGenerateModal = false;
     this.generatePrompt = '';
     this.generateNegativePrompt = '';
+    this.useImg2Img = false;
     this.apiUrl = 'http://24.52.241.22:4000';
 
     // Drag and drop
@@ -234,6 +58,7 @@ const HomePage = {
     if (layer) {
       this.generatePrompt = layer.aiPrompt || '';
       this.generateNegativePrompt = layer.aiNegativePrompt || '';
+      this.useImg2Img = layer.useImg2Img || false;
     }
   },
 
@@ -247,7 +72,8 @@ const HomePage = {
       isGenerating: false,
       aiPrompt: '',
       aiNegativePrompt: '',
-      isAiGenerated: false
+      isAiGenerated: false,
+      useImg2Img: false
     };
     this.layers.push(newLayer);
     this.setActiveLayer(newLayer.id);
@@ -367,29 +193,76 @@ const HomePage = {
     const activeLayer = this.getActiveLayer();
     if (!activeLayer) return;
 
-    // Store the prompts in the layer before generating
+    const layerRef = this.layerRefs.get(activeLayer.id);
+    if (!layerRef) return;
+
+    // Store the prompts and img2img setting in the layer before generating
     activeLayer.aiPrompt = this.generatePrompt;
     activeLayer.aiNegativePrompt = this.generateNegativePrompt;
+    activeLayer.useImg2Img = this.useImg2Img;
+
+    // Determine generation parameters based on layer content and img2img setting
+    let initImage = null;
+    let width = this.canvasWidth;
+    let height = this.canvasHeight;
+
+    // Check if layer has content and img2img is enabled
+    const hasContent = layerRef.boundingBox !== null;
+    if (hasContent && this.useImg2Img) {
+      // Use bounding box size for img2img
+      width = layerRef.boundingBox.width;
+      height = layerRef.boundingBox.height;
+
+      // Extract the current layer content as base64
+      const canvas = layerRef.canvas;
+      const ctx = layerRef.ctx;
+
+      // Create a temporary canvas with just the bounding box content
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = width;
+      tempCanvas.height = height;
+      const tempCtx = tempCanvas.getContext('2d');
+
+      // Copy the bounding box area to temp canvas
+      const imageData = ctx.getImageData(
+        layerRef.boundingBox.x,
+        layerRef.boundingBox.y,
+        width,
+        height
+      );
+      tempCtx.putImageData(imageData, 0, 0);
+
+      // Convert to base64
+      initImage = tempCanvas.toDataURL('image/png').split(',')[1];
+    }
 
     // Mark layer as generating
     activeLayer.isGenerating = true;
     m.redraw();
 
     try {
+      const requestBody = {
+        prompt: this.generatePrompt,
+        negative_prompt: this.generateNegativePrompt,
+        width: width,
+        height: height,
+        steps: 30,
+        guidance_scale: 7.0,
+        disable_safety: true
+      };
+
+      // Add img2img parameters if using existing content
+      if (initImage) {
+        requestBody.init_image = initImage;
+        requestBody.strength = 0.7; // How much to change the original image
+      }
+
       const response = await fetch(`${this.apiUrl}/request`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          prompt: this.generatePrompt,
-          negative_prompt: this.generateNegativePrompt,
-          width: this.canvasWidth,
-          height: this.canvasHeight,
-          steps: 30,
-          guidance_scale: 7.0,
-          disable_safety: true
-        })
+        body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) {
@@ -399,11 +272,23 @@ const HomePage = {
       const data = await response.json();
 
       if (data.status === 'ok') {
-        // Load the generated image into the layer
-        await this.loadImageToLayer(activeLayer.id, data.file);
+        if (initImage) {
+          // For img2img, place the result at the bounding box location
+          await this.loadImageToLayerAtPosition(
+            activeLayer.id,
+            data.file,
+            layerRef.boundingBox.x,
+            layerRef.boundingBox.y,
+            width,
+            height
+          );
+        } else {
+          // For txt2img, replace entire layer
+          await this.loadImageToLayer(activeLayer.id, data.file);
+        }
+
         // Mark as AI generated
         activeLayer.isAiGenerated = true;
-        // Don't clear prompts - keep them for editing/regenerating
       } else {
         console.error('Generation failed:', data.message);
         alert('Generation failed: ' + data.message);
@@ -451,6 +336,44 @@ const HomePage = {
 
       img.src = `data:image/png;base64,${base64Data}`;
     });
+  },
+
+  async loadImageToLayerAtPosition(layerId, base64Data, x, y, width, height) {
+    return new Promise((resolve, reject) => {
+      const layer = this.layers.find(l => l.id === layerId);
+      const layerRef = this.layerRefs.get(layerId);
+
+      if (!layer || !layerRef) {
+        reject(new Error('Layer not found'));
+        return;
+      }
+
+      const img = new Image();
+      img.onload = () => {
+        // Clear only the specific area where we'll place the new image
+        layerRef.ctx.clearRect(x, y, width, height);
+
+        // Draw the generated image at the specific position and size
+        layerRef.ctx.drawImage(img, x, y, width, height);
+
+        // Recalculate bounding box
+        layerRef.calculateBoundingBox();
+
+        m.redraw();
+        resolve();
+      };
+
+      img.onerror = (error) => {
+        reject(error);
+      };
+
+      img.src = `data:image/png;base64,${base64Data}`;
+    });
+  },
+
+  layerHasContent(layerId) {
+    const layerRef = this.layerRefs.get(layerId);
+    return layerRef && layerRef.boundingBox !== null;
   },
 
   // Drag and drop methods
@@ -724,6 +647,29 @@ const HomePage = {
                 }
               }),
 
+              // Img2img checkbox (only show if layer has content)
+              this.layerHasContent(this.activeLayerId) ? m('.flex.items-center.gap-2.p-2.bg-gray-50.rounded', [
+                m('input[type=checkbox]', {
+                  id: 'img2img-checkbox',
+                  checked: this.useImg2Img,
+                  onchange: (e) => {
+                    this.useImg2Img = e.target.checked;
+                    // Update the current layer's img2img preference
+                    const activeLayer = this.getActiveLayer();
+                    if (activeLayer) {
+                      activeLayer.useImg2Img = e.target.checked;
+                    }
+                  }
+                }),
+                m('label.text-xs.text-gray-700.cursor-pointer', {
+                  for: 'img2img-checkbox'
+                }, [
+                  'Use existing content (img2img)',
+                  m('div.text-xs.text-gray-500.mt-1',
+                    this.useImg2Img ? 'Will modify existing content' : 'Will replace entire layer')
+                ])
+              ]) : null,
+
               // Generate/Regenerate button
               m('button.w-full.px-3.py-2.bg-purple-500.text-white.rounded.text-sm.font-medium', {
                 onclick: () => this.generateImageInline(),
@@ -733,9 +679,17 @@ const HomePage = {
               }, this.getActiveLayer()?.isGenerating ? 'Generating...' :
                  (this.getActiveLayer()?.isAiGenerated ? 'Regenerate Image' : 'Generate Image')),
 
-              // Size info
-              m('.text-xs.text-gray-500.text-center',
-                `${this.canvasWidth} × ${this.canvasHeight}px`)
+              // Size info - show different info based on img2img mode
+              m('.text-xs.text-gray-500.text-center', (() => {
+                const hasContent = this.layerHasContent(this.activeLayerId);
+                const layerRef = this.layerRefs.get(this.activeLayerId);
+
+                if (hasContent && this.useImg2Img && layerRef && layerRef.boundingBox) {
+                  return `${layerRef.boundingBox.width} × ${layerRef.boundingBox.height}px (content area)`;
+                } else {
+                  return `${this.canvasWidth} × ${this.canvasHeight}px (full layer)`;
+                }
+              })())
             ])
           ]),
 
