@@ -6,8 +6,14 @@ const DrawLayer = {
     this.canvas = null;
     this.ctx = null;
     this.isDrawing = false;
+    this.isMoving = false;
     this.lastX = 0;
     this.lastY = 0;
+    this.moveStartX = 0;
+    this.moveStartY = 0;
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.boundingBox = null;
   },
 
   oncreate(vnode) {
@@ -15,6 +21,46 @@ const DrawLayer = {
     this.ctx = this.canvas.getContext('2d');
     this.ctx.lineCap = 'round';
     this.ctx.lineJoin = 'round';
+
+    // Calculate initial bounding box
+    this.calculateBoundingBox();
+  },
+
+  calculateBoundingBox() {
+    if (!this.ctx) return;
+
+    const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+    const data = imageData.data;
+
+    let minX = this.canvas.width;
+    let minY = this.canvas.height;
+    let maxX = 0;
+    let maxY = 0;
+    let hasContent = false;
+
+    for (let y = 0; y < this.canvas.height; y++) {
+      for (let x = 0; x < this.canvas.width; x++) {
+        const alpha = data[(y * this.canvas.width + x) * 4 + 3];
+        if (alpha > 0) {
+          hasContent = true;
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+
+    if (hasContent) {
+      this.boundingBox = {
+        x: minX,
+        y: minY,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1
+      };
+    } else {
+      this.boundingBox = null;
+    }
   },
 
   getMousePos(e) {
@@ -29,37 +75,57 @@ const DrawLayer = {
     const { layer, tool, isActive } = attrs;
     if (!isActive || !layer.visible) return;
 
-    this.isDrawing = true;
     const pos = this.getMousePos(e);
-    this.lastX = pos.x;
-    this.lastY = pos.y;
+
+    if (tool === 'move') {
+      this.isMoving = true;
+      this.moveStartX = pos.x;
+      this.moveStartY = pos.y;
+    } else {
+      this.isDrawing = true;
+      this.lastX = pos.x;
+      this.lastY = pos.y;
+    }
 
     e.preventDefault();
   },
 
   draw(e, attrs) {
-    const { layer, tool, brushSize, color, isActive } = attrs;
-    if (!this.isDrawing || !isActive || !layer.visible) return;
+    const { layer, tool, brushSize, color, isActive, onLayerMove } = attrs;
+    if (!isActive || !layer.visible) return;
 
     const pos = this.getMousePos(e);
 
-    this.ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-    this.ctx.strokeStyle = tool === 'pen' ? color : 'rgba(0,0,0,1)';
-    this.ctx.lineWidth = brushSize;
+    if (tool === 'move' && this.isMoving) {
+      const deltaX = pos.x - this.moveStartX;
+      const deltaY = pos.y - this.moveStartY;
 
-    this.ctx.beginPath();
-    this.ctx.moveTo(this.lastX, this.lastY);
-    this.ctx.lineTo(pos.x, pos.y);
-    this.ctx.stroke();
+      // Update layer offset through parent component
+      onLayerMove && onLayerMove(layer.id, deltaX, deltaY);
 
-    this.lastX = pos.x;
-    this.lastY = pos.y;
+    } else if (this.isDrawing && tool !== 'move') {
+      this.ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
+      this.ctx.strokeStyle = tool === 'pen' ? color : 'rgba(0,0,0,1)';
+      this.ctx.lineWidth = brushSize;
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(this.lastX, this.lastY);
+      this.ctx.lineTo(pos.x, pos.y);
+      this.ctx.stroke();
+
+      this.lastX = pos.x;
+      this.lastY = pos.y;
+
+      // Recalculate bounding box after drawing
+      this.calculateBoundingBox();
+    }
 
     e.preventDefault();
   },
 
   stopDrawing(e) {
     this.isDrawing = false;
+    this.isMoving = false;
     e && e.preventDefault();
   },
 
@@ -67,42 +133,65 @@ const DrawLayer = {
     if (this.ctx) {
       const { canvasWidth, canvasHeight } = attrs;
       this.ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      this.boundingBox = null;
     }
   },
 
   view(vnode) {
     const { layer, tool, canvasWidth, canvasHeight, zIndex, isActive } = vnode.attrs;
 
-    return m('canvas', {
-      width: canvasWidth,
-      height: canvasHeight,
-      style: `
-        position: absolute;
-        top: 0;
-        left: 0;
-        z-index: ${zIndex};
-        display: ${layer.visible ? 'block' : 'none'};
-        cursor: ${tool === 'pen' ? 'crosshair' : 'grab'};
-        pointer-events: ${isActive ? 'auto' : 'none'};
-      `,
-      onmousedown: (e) => this.startDrawing(e, vnode.attrs),
-      onmousemove: (e) => this.draw(e, vnode.attrs),
-      onmouseup: (e) => this.stopDrawing(e),
-      onmouseleave: (e) => this.stopDrawing(e)
-    });
+    const getCursor = () => {
+      if (tool === 'move') return 'move';
+      if (tool === 'pen') return 'crosshair';
+      if (tool === 'eraser') return 'grab';
+      return 'default';
+    };
+
+    return [
+      // Main canvas
+      m('canvas', {
+        width: canvasWidth,
+        height: canvasHeight,
+        style: `
+          position: absolute;
+          top: ${layer.offsetY || 0}px;
+          left: ${layer.offsetX || 0}px;
+          z-index: ${zIndex};
+          display: ${layer.visible ? 'block' : 'none'};
+          cursor: ${getCursor()};
+          pointer-events: ${isActive ? 'auto' : 'none'};
+        `,
+        onmousedown: (e) => this.startDrawing(e, vnode.attrs),
+        onmousemove: (e) => this.draw(e, vnode.attrs),
+        onmouseup: (e) => this.stopDrawing(e),
+        onmouseleave: (e) => this.stopDrawing(e)
+      }),
+
+      // Bounding box overlay (only for active layer in move mode)
+      (isActive && tool === 'move' && this.boundingBox && layer.visible) ?
+        m('.absolute.border-2.border-dashed.border-blue-500.bg-blue-100.bg-opacity-20.pointer-events-none', {
+          style: `
+            left: ${(layer.offsetX || 0) + this.boundingBox.x}px;
+            top: ${(layer.offsetY || 0) + this.boundingBox.y}px;
+            width: ${this.boundingBox.width}px;
+            height: ${this.boundingBox.height}px;
+            z-index: ${zIndex + 1000};
+          `
+        }) : null
+    ];
   }
 };
 
 const HomePage = {
   oninit(vnode) {
     this.layers = [
-      { id: 1, name: 'Layer 1', visible: true }
+      { id: 1, name: 'Layer 1', visible: true, offsetX: 0, offsetY: 0 }
     ];
     this.activeLayerId = 1;
     this.nextLayerId = 2;
     this.layerRefs = new Map(); // Store references to DrawLayer components
 
-    this.tool = 'pen'; // 'pen' or 'eraser'
+    this.tool = 'pen'; // 'pen', 'eraser', or 'move'
     this.brushSize = 5;
     this.color = '#000000';
 
@@ -118,7 +207,9 @@ const HomePage = {
     const newLayer = {
       id: this.nextLayerId++,
       name: `Layer ${this.nextLayerId - 1}`,
-      visible: true
+      visible: true,
+      offsetX: 0,
+      offsetY: 0
     };
     this.layers.push(newLayer);
     this.activeLayerId = newLayer.id;
@@ -151,7 +242,22 @@ const HomePage = {
   clearActiveLayer() {
     const activeLayerRef = this.layerRefs.get(this.activeLayerId);
     if (activeLayerRef) {
-      activeLayerRef.clear();
+      activeLayerRef.clear({
+        canvasWidth: this.canvasWidth,
+        canvasHeight: this.canvasHeight
+      });
+    }
+  },
+
+  moveLayer(layerId, deltaX, deltaY) {
+    const layer = this.layers.find(l => l.id === layerId);
+    if (layer) {
+      layer.offsetX = (layer.offsetX || 0) + deltaX;
+      layer.offsetY = (layer.offsetY || 0) + deltaY;
+
+      // Constrain to canvas bounds (optional)
+      layer.offsetX = Math.max(-this.canvasWidth/2, Math.min(this.canvasWidth/2, layer.offsetX));
+      layer.offsetY = Math.max(-this.canvasHeight/2, Math.min(this.canvasHeight/2, layer.offsetY));
     }
   },
 
@@ -171,7 +277,11 @@ const HomePage = {
           m('button.px-3.py-1.rounded.text-sm', {
             class: this.tool === 'eraser' ? 'bg-blue-500.text-white' : 'bg-white.border',
             onclick: () => { this.tool = 'eraser'; }
-          }, 'Eraser')
+          }, 'Eraser'),
+          m('button.px-3.py-1.rounded.text-sm', {
+            class: this.tool === 'move' ? 'bg-blue-500.text-white' : 'bg-white.border',
+            onclick: () => { this.tool = 'move'; }
+          }, 'Move')
         ]),
 
         // Color picker (only for pen)
@@ -183,8 +293,8 @@ const HomePage = {
           })
         ]) : null,
 
-        // Brush size
-        m('.flex.gap-2.items-center', [
+        // Brush size (not for move tool)
+        this.tool !== 'move' ? m('.flex.gap-2.items-center', [
           m('label.text-sm.font-medium', 'Size:'),
           m('input[type=range]', {
             min: 1,
@@ -193,7 +303,7 @@ const HomePage = {
             onchange: (e) => { this.brushSize = parseInt(e.target.value); }
           }),
           m('span.text-sm.w-8', this.brushSize + 'px')
-        ]),
+        ]) : null,
 
         // Clear button
         m('button.px-3.py-1.bg-red-500.text-white.rounded.text-sm', {
@@ -221,6 +331,7 @@ const HomePage = {
                 canvasHeight: this.canvasHeight,
                 zIndex: index + 1,
                 isActive: isActive,
+                onLayerMove: (layerId, deltaX, deltaY) => this.moveLayer(layerId, deltaX, deltaY),
                 oncreate: (layerVnode) => {
                   // Store reference to the DrawLayer component
                   this.layerRefs.set(layer.id, layerVnode.state);
@@ -273,7 +384,8 @@ const HomePage = {
           // Layer info
           m('.mt-4.text-sm.text-gray-600', [
             m('p', `Active: Layer ${this.activeLayerId}`),
-            m('p', `Total: ${this.layers.length} layers`)
+            m('p', `Total: ${this.layers.length} layers`),
+            this.tool === 'move' ? m('p.text-blue-600.font-medium', 'Move mode: Drag to reposition active layer') : null
           ])
         ])
       ]),
@@ -282,13 +394,14 @@ const HomePage = {
       m('.mt-8.text-sm.text-gray-600.bg-gray-50.p-4.rounded', [
         m('h4.font-medium.mb-2', 'Instructions:'),
         m('ul.list-disc.list-inside.space-y-1', [
-          m('li', 'Select pen or eraser tool from the toolbar'),
-          m('li', 'Choose color and brush size'),
-          m('li', 'Click and drag on the canvas to draw'),
+          m('li', 'Select pen, eraser, or move tool from the toolbar'),
+          m('li', 'Choose color and brush size (pen/eraser only)'),
+          m('li', 'Click and drag on the canvas to draw or move'),
+          m('li', 'Move tool: highlights bounding box and repositions the active layer'),
           m('li', 'Use layers panel to add/remove/toggle layers'),
           m('li', 'Click on a layer name to make it active'),
           m('li', 'Eye icon toggles layer visibility'),
-          m('li', 'Only the active layer receives drawing input')
+          m('li', 'Only the active layer receives drawing/moving input')
         ])
       ])
     ]);
