@@ -17,7 +17,8 @@ const HomePage = {
         aiPrompt: '',
         aiNegativePrompt: '',
         isAiGenerated: false,
-        useImg2Img: false
+        useImg2Img: false,
+        removeBg: false
       }
     ];
     this.activeLayerId = 1;
@@ -36,7 +37,8 @@ const HomePage = {
     this.generatePrompt = '';
     this.generateNegativePrompt = '';
     this.useImg2Img = false;
-    this.apiUrl = 'http://24.52.241.22:4000';
+    this.removeBg = false;
+    this.apiUrl = 'https://node1.hyperforge.ai/port/4000';
 
     // Drag and drop
     this.dragState = {
@@ -59,6 +61,7 @@ const HomePage = {
       this.generatePrompt = layer.aiPrompt || '';
       this.generateNegativePrompt = layer.aiNegativePrompt || '';
       this.useImg2Img = layer.useImg2Img || false;
+      this.removeBg = layer.removeBg || false;
     }
   },
 
@@ -73,7 +76,8 @@ const HomePage = {
       aiPrompt: '',
       aiNegativePrompt: '',
       isAiGenerated: false,
-      useImg2Img: false
+      useImg2Img: false,
+      removeBg: false
     };
     this.layers.push(newLayer);
     this.setActiveLayer(newLayer.id);
@@ -161,7 +165,8 @@ const HomePage = {
           height: this.canvasHeight,
           steps: 30,
           guidance_scale: 7.0,
-          disable_safety: true
+          disable_safety: true,
+          remove_bg: this.removeBg
         })
       });
 
@@ -196,10 +201,11 @@ const HomePage = {
     const layerRef = this.layerRefs.get(activeLayer.id);
     if (!layerRef) return;
 
-    // Store the prompts and img2img setting in the layer before generating
+    // Store the prompts and settings in the layer before generating
     activeLayer.aiPrompt = this.generatePrompt;
     activeLayer.aiNegativePrompt = this.generateNegativePrompt;
     activeLayer.useImg2Img = this.useImg2Img;
+    activeLayer.removeBg = this.removeBg;
 
     // Determine generation parameters based on layer content and img2img setting
     let initImage = null;
@@ -248,7 +254,8 @@ const HomePage = {
         height: height,
         steps: 30,
         guidance_scale: 7.0,
-        disable_safety: true
+        disable_safety: true,
+        remove_bg: this.removeBg
       };
 
       // Add img2img parameters if using existing content
@@ -519,13 +526,9 @@ const HomePage = {
                 zIndex: index + 1,
                 isActive: isActive,
                 onLayerMove: (layerId, deltaX, deltaY) => this.moveLayer(layerId, deltaX, deltaY),
-                oncreate: (layerVnode) => {
-                  // Store reference to the DrawLayer component
-                  this.layerRefs.set(layer.id, layerVnode.state);
-                },
-                onremove: () => {
-                  // Clean up reference when layer is removed
-                  this.layerRefs.delete(layer.id);
+                onref: (inst) => {
+                  if (inst) this.layerRefs.set(layer.id, inst);
+                  else this.layerRefs.delete(layer.id);
                 }
               });
             })
@@ -561,7 +564,8 @@ const HomePage = {
                   draggable: true,
                   class: [
                     layer.id === this.activeLayerId ?
-                      'border-blue-500.bg-blue-100.shadow-md' : 'border-gray-200.hover:border-gray-300',
+                      'border-blue-500 bg-blue-50 shadow-md ring-4 ring-blue-500 ring-offset-2 ring-offset-white'
+                      : 'border-gray-200.hover:border-gray-300',
                     isDragging ? 'opacity-50.scale-95.rotate-1' : '',
                     isDropTarget ? 'border-blue-400.bg-blue-50' : ''
                   ].filter(Boolean).join(' '),
@@ -670,6 +674,29 @@ const HomePage = {
                 ])
               ]) : null,
 
+              // Background removal checkbox
+              m('.flex.items-center.gap-2.p-2.bg-gray-50.rounded', [
+                m('input[type=checkbox]', {
+                  id: 'remove-bg-checkbox',
+                  checked: this.removeBg,
+                  onchange: (e) => {
+                    this.removeBg = e.target.checked;
+                    // Update the current layer's background removal preference
+                    const activeLayer = this.getActiveLayer();
+                    if (activeLayer) {
+                      activeLayer.removeBg = e.target.checked;
+                    }
+                  }
+                }),
+                m('label.text-xs.text-gray-700.cursor-pointer', {
+                  for: 'remove-bg-checkbox'
+                }, [
+                  'Remove background',
+                  m('div.text-xs.text-gray-500.mt-1',
+                    this.removeBg ? 'Generated image will have transparent background' : 'Generated image will have background')
+                ])
+              ]),
+
               // Generate/Regenerate button
               m('button.w-full.px-3.py-2.bg-purple-500.text-white.rounded.text-sm.font-medium', {
                 onclick: () => this.generateImageInline(),
@@ -711,6 +738,7 @@ const HomePage = {
           m('li', 'Click and drag on the canvas to draw or move'),
           m('li', 'Move tool: highlights bounding box and repositions the active layer'),
           m('li', 'AI Generate: create content using AI prompts'),
+          m('li', 'Remove background: generates images with transparent backgrounds'),
           m('li', 'Drag the ⋮⋮ handle to reorder layers'),
           m('li', 'Use layers panel to add/remove/toggle layers'),
           m('li', 'Click on a layer name to make it active'),
@@ -747,6 +775,18 @@ const HomePage = {
                 value: this.generateNegativePrompt,
                 oninput: (e) => { this.generateNegativePrompt = e.target.value; }
               })
+            ]),
+
+            // Background removal checkbox in modal
+            m('.flex.items-center.gap-2', [
+              m('input[type=checkbox]', {
+                id: 'modal-remove-bg-checkbox',
+                checked: this.removeBg,
+                onchange: (e) => { this.removeBg = e.target.checked; }
+              }),
+              m('label.text-sm.text-gray-700.cursor-pointer', {
+                for: 'modal-remove-bg-checkbox'
+              }, 'Remove background (transparent)')
             ]),
 
             m('.text-sm.text-gray-600', [
