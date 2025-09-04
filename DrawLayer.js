@@ -2,22 +2,38 @@ const DrawLayer = {
   oninit(vnode) {
     this.canvas = null;
     this.ctx = null;
+    this.dpr = 1;
     this.isDrawing = false;
     this.isMoving = false;
     this.lastX = 0;
     this.lastY = 0;
     this.moveStartX = 0;
     this.moveStartY = 0;
-    this.offsetX = 0;
-    this.offsetY = 0;
     this.boundingBox = null;
+    this._needsBBoxRescan = false;
+    // hand the instance back to the parent
+    vnode.attrs.onref && vnode.attrs.onref(this);
+  },
+
+  onremove(vnode) {
+    vnode.attrs.onref && vnode.attrs.onref(null);
   },
 
   oncreate(vnode) {
     this.canvas = vnode.dom;
-    this.ctx = this.canvas.getContext('2d');
+    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
     this.ctx.lineCap = 'round';
     this.ctx.lineJoin = 'round';
+
+    // Hi-DPI scaling
+    this.dpr = window.devicePixelRatio || 1;
+    const cssW = vnode.attrs.canvasWidth;
+    const cssH = vnode.attrs.canvasHeight;
+    this.canvas.width = Math.floor(cssW * this.dpr);
+    this.canvas.height = Math.floor(cssH * this.dpr);
+    this.canvas.style.width = cssW + 'px';
+    this.canvas.style.height = cssH + 'px';
+    this.ctx.scale(this.dpr, this.dpr);
 
     // Calculate initial bounding box
     this.calculateBoundingBox();
@@ -26,37 +42,83 @@ const DrawLayer = {
   calculateBoundingBox() {
     if (!this.ctx) return;
 
-    const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+    const wpx = this.canvas.width;   // device pixels
+    const hpx = this.canvas.height;  // device pixels
+    const imageData = this.ctx.getImageData(0, 0, wpx, hpx);
     const data = imageData.data;
 
-    let minX = this.canvas.width;
-    let minY = this.canvas.height;
+    let minX = wpx;
+    let minY = hpx;
     let maxX = 0;
     let maxY = 0;
     let hasContent = false;
 
-    for (let y = 0; y < this.canvas.height; y++) {
-      for (let x = 0; x < this.canvas.width; x++) {
-        const alpha = data[(y * this.canvas.width + x) * 4 + 3];
+    for (let y = 0; y < hpx; y++) {
+      for (let x = 0; x < wpx; x++) {
+        const alpha = data[(y * wpx + x) * 4 + 3];
         if (alpha > 0) {
           hasContent = true;
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
         }
       }
     }
 
     if (hasContent) {
-      this.boundingBox = {
-        x: minX,
-        y: minY,
-        width: maxX - minX + 1,
-        height: maxY - minY + 1
-      };
+      // convert to CSS pixels
+      const d = this.dpr;
+      const x = Math.floor(minX / d);
+      const y = Math.floor(minY / d);
+      const w = Math.ceil((maxX - minX + 1) / d);
+      const h = Math.ceil((maxY - minY + 1) / d);
+      this.boundingBox = { x, y, width: w, height: h };
     } else {
       this.boundingBox = null;
+    }
+  },
+
+  resetBBox() {
+    this.boundingBox = null;
+  },
+
+  expandBBox(x1, y1, x2, y2, brush) {
+    // All inputs are in CSS pixels
+    const pad = Math.ceil(brush / 2);
+    const minX = Math.min(x1, x2) - pad;
+    const minY = Math.min(y1, y2) - pad;
+    const maxX = Math.max(x1, x2) + pad;
+    const maxY = Math.max(y1, y2) + pad;
+
+    const cssW = this.canvas.width / this.dpr;
+    const cssH = this.canvas.height / this.dpr;
+
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const nMinX = clamp(minX, 0, cssW);
+    const nMinY = clamp(minY, 0, cssH);
+    const nMaxX = clamp(maxX, 0, cssW);
+    const nMaxY = clamp(maxY, 0, cssH);
+
+    if (!this.boundingBox) {
+      this.boundingBox = {
+        x: nMinX,
+        y: nMinY,
+        width: Math.max(0, nMaxX - nMinX),
+        height: Math.max(0, nMaxY - nMinY)
+      };
+    } else {
+      const bx = this.boundingBox;
+      const newMinX = Math.min(bx.x, nMinX);
+      const newMinY = Math.min(bx.y, nMinY);
+      const newMaxX = Math.max(bx.x + bx.width, nMaxX);
+      const newMaxY = Math.max(bx.y + bx.height, nMaxY);
+      this.boundingBox = {
+        x: newMinX,
+        y: newMinY,
+        width: Math.max(0, newMaxX - newMinX),
+        height: Math.max(0, newMaxY - newMinY)
+      };
     }
   },
 
@@ -94,15 +156,18 @@ const DrawLayer = {
     const pos = this.getMousePos(e);
 
     if (tool === 'move' && this.isMoving) {
-      const deltaX = pos.x - this.moveStartX;
-      const deltaY = pos.y - this.moveStartY;
+      const dx = pos.x - this.moveStartX;
+      const dy = pos.y - this.moveStartY;
 
-      // Update layer offset through parent component
-      onLayerMove && onLayerMove(layer.id, deltaX, deltaY);
+      // Update layer offset through parent component (incremental)
+      onLayerMove && onLayerMove(layer.id, dx, dy);
 
+      // Reset to make subsequent deltas incremental
+      this.moveStartX = pos.x;
+      this.moveStartY = pos.y;
     } else if (this.isDrawing && tool !== 'move') {
       this.ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-      this.ctx.strokeStyle = tool === 'pen' ? color : 'rgba(0,0,0,1)';
+      this.ctx.strokeStyle = tool === 'pen' ? color : '#000';
       this.ctx.lineWidth = brushSize;
 
       this.ctx.beginPath();
@@ -110,11 +175,12 @@ const DrawLayer = {
       this.ctx.lineTo(pos.x, pos.y);
       this.ctx.stroke();
 
+      // Fast bbox update for pen; defer rescan for eraser
+      if (tool === 'pen') this.expandBBox(this.lastX, this.lastY, pos.x, pos.y, brushSize);
+      else this._needsBBoxRescan = true;
+
       this.lastX = pos.x;
       this.lastY = pos.y;
-
-      // Recalculate bounding box after drawing
-      this.calculateBoundingBox();
     }
 
     e.preventDefault();
@@ -123,6 +189,10 @@ const DrawLayer = {
   stopDrawing(e) {
     this.isDrawing = false;
     this.isMoving = false;
+    if (this._needsBBoxRescan) {
+      this._needsBBoxRescan = false;
+      (window.requestIdleCallback || window.setTimeout)(() => this.calculateBoundingBox(), 0);
+    }
     e && e.preventDefault();
   },
 
