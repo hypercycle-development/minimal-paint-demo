@@ -2,7 +2,6 @@ const DrawLayer = {
   oninit(vnode) {
     this.canvas = null;
     this.ctx = null;
-    this.dpr = 1;
     this.isDrawing = false;
     this.isMoving = false;
     this.lastX = 0;
@@ -25,15 +24,14 @@ const DrawLayer = {
     this.ctx.lineCap = 'round';
     this.ctx.lineJoin = 'round';
 
-    // Hi-DPI scaling
-    this.dpr = window.devicePixelRatio || 1;
+    // Set canvas size directly without DPI scaling
     const cssW = vnode.attrs.canvasWidth;
     const cssH = vnode.attrs.canvasHeight;
-    this.canvas.width = Math.floor(cssW * this.dpr);
-    this.canvas.height = Math.floor(cssH * this.dpr);
+    this.canvas.width = cssW;
+    this.canvas.height = cssH;
     this.canvas.style.width = cssW + 'px';
     this.canvas.style.height = cssH + 'px';
-    this.ctx.scale(this.dpr, this.dpr);
+    // No DPI scaling applied
 
     // Calculate initial bounding box
     this.calculateBoundingBox();
@@ -42,8 +40,8 @@ const DrawLayer = {
   calculateBoundingBox() {
     if (!this.ctx) return;
 
-    const wpx = this.canvas.width;   // device pixels
-    const hpx = this.canvas.height;  // device pixels
+    const wpx = this.canvas.width;   // canvas pixels
+    const hpx = this.canvas.height;  // canvas pixels
     const imageData = this.ctx.getImageData(0, 0, wpx, hpx);
     const data = imageData.data;
 
@@ -67,13 +65,13 @@ const DrawLayer = {
     }
 
     if (hasContent) {
-      // convert to CSS pixels
-      const d = this.dpr;
-      const x = Math.floor(minX / d);
-      const y = Math.floor(minY / d);
-      const w = Math.ceil((maxX - minX + 1) / d);
-      const h = Math.ceil((maxY - minY + 1) / d);
-      this.boundingBox = { x, y, width: w, height: h };
+      // No DPI conversion needed since canvas pixels = CSS pixels
+      this.boundingBox = {
+        x: minX,
+        y: minY,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1
+      };
     } else {
       this.boundingBox = null;
     }
@@ -84,15 +82,15 @@ const DrawLayer = {
   },
 
   expandBBox(x1, y1, x2, y2, brush) {
-    // All inputs are in CSS pixels
+    // All inputs are in canvas pixels (same as CSS pixels now)
     const pad = Math.ceil(brush / 2);
     const minX = Math.min(x1, x2) - pad;
     const minY = Math.min(y1, y2) - pad;
     const maxX = Math.max(x1, x2) + pad;
     const maxY = Math.max(y1, y2) + pad;
 
-    const cssW = this.canvas.width / this.dpr;
-    const cssH = this.canvas.height / this.dpr;
+    const cssW = this.canvas.width;
+    const cssH = this.canvas.height;
 
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const nMinX = clamp(minX, 0, cssW);
