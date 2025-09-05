@@ -120,19 +120,30 @@ const DrawLayer = {
     }
   },
 
-  getMousePos(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
+  getMousePos(e, forMove = false) {
+    if (forMove) {
+      // For move tool, calculate position relative to the canvas container (not the moved canvas)
+      const container = this.canvas.parentElement;
+      const rect = container.getBoundingClientRect();
+      return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+    } else {
+      // For drawing tools, calculate position relative to the canvas itself
+      const rect = this.canvas.getBoundingClientRect();
+      return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+    }
   },
 
   startDrawing(e, attrs) {
     const { layer, tool, isActive } = attrs;
     if (!isActive || !layer.visible) return;
 
-    const pos = this.getMousePos(e);
+    const pos = this.getMousePos(e, tool === 'move');
 
     if (tool === 'move') {
       this.isMoving = true;
@@ -151,7 +162,7 @@ const DrawLayer = {
     const { layer, tool, brushSize, color, isActive, onLayerMove } = attrs;
     if (!isActive || !layer.visible) return;
 
-    const pos = this.getMousePos(e);
+    const pos = this.getMousePos(e, tool === 'move');
 
     if (tool === 'move' && this.isMoving) {
       const dx = pos.x - this.moveStartX;
