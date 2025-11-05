@@ -3,7 +3,6 @@ import DrawLayer from './DrawLayer.js';
 
 const m = window.m;
 
-
 const HomePage = {
   oninit(vnode) {
     this.layers = [
@@ -417,7 +416,7 @@ const HomePage = {
     const x = e.clientX;
     const y = e.clientY;
 
-    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+    if (x < rect.left || x > rect.right || y < rect.bottom || y > rect.top) {
       this.dragState.dragOverIndex = null;
       m.redraw();
     }
@@ -447,6 +446,32 @@ const HomePage = {
     this.dragState.dragLayerId = null;
     this.dragState.dragOverIndex = null;
     m.redraw();
+  },
+
+  // --- NEW: Download the composited image (all visible layers) as PNG ---
+  downloadPNG() {
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = this.canvasWidth;
+    tempCanvas.height = this.canvasHeight;
+    const tempCtx = tempCanvas.getContext('2d');
+
+    // Draw bottom -> top respecting visibility and layer offsets
+    for (const layer of this.layers) {
+      if (!layer.visible) continue;
+      const ref = this.layerRefs.get(layer.id);
+      if (!ref || !ref.canvas) continue;
+
+      const dx = Math.round(layer.offsetX || 0);
+      const dy = Math.round(layer.offsetY || 0);
+      tempCtx.drawImage(ref.canvas, dx, dy);
+    }
+
+    const a = document.createElement('a');
+    a.href = tempCanvas.toDataURL('image/png');
+    a.download = `paint-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   },
 
   view(vnode) {
@@ -502,7 +527,12 @@ const HomePage = {
         m('button.px-3.py-1.bg-purple-500.text-white.rounded.text-sm', {
           onclick: () => this.openGenerateModal(),
           disabled: this.getActiveLayer()?.isGenerating
-        }, this.getActiveLayer()?.isGenerating ? 'Generating...' : 'AI Generate')
+        }, this.getActiveLayer()?.isGenerating ? 'Generating...' : 'AI Generate'),
+
+        // --- NEW: Download PNG button ---
+        m('button.px-3.py-1.bg-green-600.text-white.rounded.text-sm', {
+          onclick: () => this.downloadPNG()
+        }, 'Download PNG')
       ]),
 
       // Main content area
