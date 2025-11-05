@@ -24,7 +24,7 @@ const HomePage = {
     this.nextLayerId = 2;
     this.layerRefs = new Map(); // Store references to DrawLayer components
 
-    this.tool = 'pen'; // 'pen', 'eraser', or 'move'
+    this.tool = 'pen'; // 'pen', 'eraser', 'move', or 'resize'
     this.brushSize = 5;
     this.color = '#000000';
 
@@ -46,10 +46,25 @@ const HomePage = {
       dragStartY: 0,
       dragOverIndex: null
     };
+
+    // Resize state
+    this.resizeState = {
+      dragging: false,
+      handle: null, // 'nw' | 'ne' | 'se' | 'sw'
+      startClientX: 0,
+      startClientY: 0,
+      orig: null,     // {x,y,width,height}
+      current: null,  // {x,y,width,height}
+      shift: false
+    };
   },
 
   getActiveLayer() {
     return this.layers.find(layer => layer.id === this.activeLayerId);
+  },
+
+  getActiveLayerRef() {
+    return this.layerRefs.get(this.activeLayerId);
   },
 
   setActiveLayer(layerId) {
@@ -416,7 +431,7 @@ const HomePage = {
     const x = e.clientX;
     const y = e.clientY;
 
-    if (x < rect.left || x > rect.right || y < rect.bottom || y > rect.top) {
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
       this.dragState.dragOverIndex = null;
       m.redraw();
     }
@@ -474,7 +489,228 @@ const HomePage = {
     document.body.removeChild(a);
   },
 
+  // --- NEW: Resize logic (corner handles + shift to preserve aspect) ---
+  _startResize(handle, e) {
+    const layerRef = this.getActiveLayerRef();
+    if (!layerRef || !layerRef.boundingBox) return;
+
+    // Initialize resize state
+    this.resizeState.dragging = true;
+    this.resizeState.handle = handle;
+    this.resizeState.startClientX = e.clientX;
+    this.resizeState.startClientY = e.clientY;
+    this.resizeState.shift = !!e.shiftKey;
+    // Clone original bbox
+    this.resizeState.orig = {
+      x: layerRef.boundingBox.x,
+      y: layerRef.boundingBox.y,
+      width: layerRef.boundingBox.width,
+      height: layerRef.boundingBox.height
+    };
+    this.resizeState.current = { ...this.resizeState.orig };
+
+    const onMove = (ev) => this._onResizeMove(ev);
+    const onUp = (ev) => this._finishResize(ev, onMove, onUp);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+
+    e.preventDefault();
+    e.stopPropagation();
+  },
+
+  _onResizeMove(e) {
+    if (!this.resizeState.dragging || !this.resizeState.orig) return;
+
+    // Deltas in CSS pixels; canvas is displayed 1:1 to CSS size
+    const dx = e.clientX - this.resizeState.startClientX;
+    const dy = e.clientY - this.resizeState.startClientY;
+
+    const orig = this.resizeState.orig;
+    let newX, newY, newW, newH;
+
+    // Anchor logic per-handle:
+    switch (this.resizeState.handle) {
+      case 'se': // anchor top-left
+        newX = orig.x;
+        newY = orig.y;
+        newW = orig.width + dx;
+        newH = orig.height + dy;
+        break;
+      case 'ne': // anchor bottom-left
+        newX = orig.x;
+        newW = orig.width + dx;
+        newY = orig.y + dy;
+        newH = orig.height - dy;
+        break;
+      case 'nw': // anchor bottom-right
+        newX = orig.x + dx;
+        newW = orig.width - dx;
+        newY = orig.y + dy;
+        newH = orig.height - dy;
+        break;
+      case 'sw': // anchor top-right
+        newX = orig.x + dx;
+        newW = orig.width - dx;
+        newY = orig.y;
+        newH = orig.height + dy;
+        break;
+      default:
+        return;
+    }
+
+    // Maintain aspect ratio if shift is held
+    const keepAspect = !!e.shiftKey || this.resizeState.shift;
+    const ratio = orig.width / orig.height;
+
+    if (keepAspect) {
+      // Adjust width/height to preserve ratio based on the handle
+      if (this.resizeState.handle === 'se') {
+        // Expand from top-left
+        if (Math.abs(newW / ratio - newH) > Math.abs(newH * ratio - newW)) {
+          newH = Math.round(newW / ratio);
+        } else {
+          newW = Math.round(newH * ratio);
+        }
+      } else if (this.resizeState.handle === 'ne') {
+        if (Math.abs(newW / ratio - newH) > Math.abs(newH * ratio - newW)) {
+          newH = Math.round(newW / ratio);
+        } else {
+          newW = Math.round(newH * ratio);
+        }
+        newY = orig.y + (orig.height - newH);
+      } else if (this.resizeState.handle === 'nw') {
+        if (Math.abs(newW / ratio - newH) > Math.abs(newH * ratio - newW)) {
+          newH = Math.round(newW / ratio);
+        } else {
+          newW = Math.round(newH * ratio);
+        }
+        newX = orig.x + (orig.width - newW);
+        newY = orig.y + (orig.height - newH);
+      } else if (this.resizeState.handle === 'sw') {
+        if (Math.abs(newW / ratio - newH) > Math.abs(newH * ratio - newW)) {
+          newH = Math.round(newW / ratio);
+        } else {
+          newW = Math.round(newH * ratio);
+        }
+        newX = orig.x + (orig.width - newW);
+      }
+    }
+
+    // Enforce bounds & minimums
+    const minSize = 1;
+    // Clamp sizes >= 1
+    newW = Math.max(minSize, newW);
+    newH = Math.max(minSize, newH);
+
+    // Clamp to canvas bounds
+    // Ensure box stays fully within [0, canvasWidth/Height]
+    if (newX < 0) {
+      if (keepAspect) {
+        // Move box right while keeping same width
+        const shiftX = -newX;
+        newX += shiftX;
+      } else newX = 0;
+    }
+    if (newY < 0) {
+      if (keepAspect) {
+        const shiftY = -newY;
+        newY += shiftY;
+      } else newY = 0;
+    }
+    if (newX + newW > this.canvasWidth) {
+      const over = newX + newW - this.canvasWidth;
+      if (keepAspect) {
+        newW -= over;
+        if (this.resizeState.handle === 'nw' || this.resizeState.handle === 'sw') {
+          newX = this.canvasWidth - newW;
+        }
+        newH = Math.max(minSize, Math.round(newW / ratio));
+        if (this.resizeState.handle === 'ne' || this.resizeState.handle === 'nw') {
+          newY = orig.y + (orig.height - newH);
+        }
+      } else {
+        newW -= over;
+      }
+    }
+    if (newY + newH > this.canvasHeight) {
+      const over = newY + newH - this.canvasHeight;
+      if (keepAspect) {
+        newH -= over;
+        if (this.resizeState.handle === 'nw' || this.resizeState.handle === 'ne') {
+          newY = this.canvasHeight - newH;
+        }
+        newW = Math.max(minSize, Math.round(newH * ratio));
+        if (this.resizeState.handle === 'nw' || this.resizeState.handle === 'sw') {
+          newX = orig.x + (orig.width - newW);
+        }
+      } else {
+        newH -= over;
+      }
+    }
+
+    this.resizeState.current = { x: Math.round(newX), y: Math.round(newY), width: Math.round(newW), height: Math.round(newH) };
+    m.redraw();
+  },
+
+  _finishResize(e, onMove, onUp) {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+
+    if (!this.resizeState.dragging || !this.resizeState.current || !this.resizeState.orig) {
+      this.resizeState.dragging = false;
+      this.resizeState.handle = null;
+      this.resizeState.orig = null;
+      this.resizeState.current = null;
+      return;
+    }
+
+    const layerRef = this.getActiveLayerRef();
+    if (layerRef && layerRef.ctx) {
+      const orig = this.resizeState.orig;
+      const cur = this.resizeState.current;
+
+      // Copy the original bbox content into an offscreen canvas
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = orig.width;
+      srcCanvas.height = orig.height;
+      const srcCtx = srcCanvas.getContext('2d');
+
+      // Draw original region into srcCanvas
+      srcCtx.drawImage(
+        layerRef.canvas,
+        orig.x, orig.y, orig.width, orig.height,
+        0, 0, orig.width, orig.height
+      );
+
+      // Clear original area on the layer
+      layerRef.ctx.clearRect(orig.x, orig.y, orig.width, orig.height);
+
+      // Draw scaled content at new position/size
+      layerRef.ctx.drawImage(
+        srcCanvas,
+        0, 0, orig.width, orig.height,
+        cur.x, cur.y, cur.width, cur.height
+      );
+
+      // Recompute bounding box
+      if (typeof layerRef.calculateBoundingBox === 'function') {
+        layerRef.calculateBoundingBox();
+      }
+    }
+
+    // Reset resize state
+    this.resizeState.dragging = false;
+    this.resizeState.handle = null;
+    this.resizeState.orig = null;
+    this.resizeState.current = null;
+
+    m.redraw();
+  },
+
   view(vnode) {
+    const activeLayerRef = this.getActiveLayerRef();
+    const showResizeOverlay = this.tool === 'resize' && activeLayerRef && activeLayerRef.boundingBox;
+
     return m('.max-w-6xl.mx-auto.px-4.py-8', [
       m('h1.text-3xl.font-bold.text-gray-900.text-center.mb-8', 'Paint Demo'),
 
@@ -494,7 +730,11 @@ const HomePage = {
           m('button.px-3.py-1.rounded.text-sm', {
             class: this.tool === 'move' ? 'bg-blue-500.text-white' : 'bg-white.border',
             onclick: () => { this.tool = 'move'; }
-          }, 'Move')
+          }, 'Move'),
+          m('button.px-3.py-1.rounded.text-sm', {
+            class: this.tool === 'resize' ? 'bg-blue-500.text-white' : 'bg-white.border',
+            onclick: () => { this.tool = 'resize'; }
+          }, 'Resize')
         ]),
 
         // Color picker (only for pen)
@@ -506,8 +746,8 @@ const HomePage = {
           })
         ]) : null,
 
-        // Brush size (not for move tool)
-        this.tool !== 'move' ? m('.flex.gap-2.items-center', [
+        // Brush size (not for move/resize tools)
+        (this.tool !== 'move' && this.tool !== 'resize') ? m('.flex.gap-2.items-center', [
           m('label.text-sm.font-medium', 'Size:'),
           m('input[type=range]', {
             min: 1,
@@ -529,7 +769,7 @@ const HomePage = {
           disabled: this.getActiveLayer()?.isGenerating
         }, this.getActiveLayer()?.isGenerating ? 'Generating...' : 'AI Generate'),
 
-        // --- NEW: Download PNG button ---
+        // Download PNG button
         m('button.px-3.py-1.bg-green-600.text-white.rounded.text-sm', {
           onclick: () => this.downloadPNG()
         }, 'Download PNG')
@@ -561,7 +801,39 @@ const HomePage = {
                   else this.layerRefs.delete(layer.id);
                 }
               });
-            })
+            }),
+
+            // --- NEW: Resize overlay with corner handles ---
+            showResizeOverlay ? (() => {
+              const handleSize = 10;
+              const box = this.resizeState.current || activeLayerRef.boundingBox;
+              const cx = (x) => `${x - handleSize / 2}px`;
+              const cy = (y) => `${y - handleSize / 2}px`;
+
+              const boxStyle = [
+                `left:${box.x}px`,
+                `top:${box.y}px`,
+                `width:${box.width}px`,
+                `height:${box.height}px`
+              ].join(';');
+
+              const mkHandle = (which, x, y, cursor) => m('.absolute.bg-blue-500.rounded', {
+                style: `left:${cx(x)};top:${cy(y)};width:${handleSize}px;height:${handleSize}px;cursor:${cursor};pointer-events:auto;`,
+                title: 'Drag to resize (hold Shift to lock aspect ratio)',
+                onmousedown: (ev) => this._startResize(which, ev),
+                ondragstart: (ev) => ev.preventDefault()
+              });
+
+              return m('.absolute.inset-0.pointer-events-none', { style: 'z-index:9999;' }, [
+                // Outline
+                m('.absolute.border-2.border-blue-500.border-dashed', { style: boxStyle }),
+                // Corner handles
+                mkHandle('nw', box.x, box.y, 'nwse-resize'),
+                mkHandle('ne', box.x + box.width, box.y, 'nesw-resize'),
+                mkHandle('se', box.x + box.width, box.y + box.height, 'nwse-resize'),
+                mkHandle('sw', box.x, box.y + box.height, 'nesw-resize')
+              ]);
+            })() : null
           ])
         ]),
 
@@ -754,7 +1026,12 @@ const HomePage = {
           m('.mt-4.text-sm.text-gray-600', [
             m('p', `Active: Layer ${this.activeLayerId}`),
             m('p', `Total: ${this.layers.length} layers`),
-            this.tool === 'move' ? m('p.text-blue-600.font-medium', 'Move mode: Drag to reposition active layer') : null
+            (this.tool === 'move')
+              ? m('p.text-blue-600.font-medium', 'Move mode: Drag to reposition active layer')
+              : null,
+            (this.tool === 'resize')
+              ? m('p.text-blue-600.font-medium', 'Resize mode: Drag the corner handles; hold Shift to keep aspect ratio')
+              : null
           ])
         ])
       ]),
@@ -763,17 +1040,18 @@ const HomePage = {
       m('.mt-8.text-sm.text-gray-600.bg-gray-50.p-4.rounded', [
         m('h4.font-medium.mb-2', 'Instructions:'),
         m('ul.list-disc.list-inside.space-y-1', [
-          m('li', 'Select pen, eraser, or move tool from the toolbar'),
+          m('li', 'Select pen, eraser, move, or resize tool from the toolbar'),
           m('li', 'Choose color and brush size (pen/eraser only)'),
           m('li', 'Click and drag on the canvas to draw or move'),
-          m('li', 'Move tool: highlights bounding box and repositions the active layer'),
+          m('li', 'Move mode: highlights bounding box and repositions the active layer'),
+          m('li', 'Resize mode: drag corner handles; hold Shift to preserve aspect ratio'),
           m('li', 'AI Generate: create content using AI prompts'),
           m('li', 'Remove background: generates images with transparent backgrounds'),
           m('li', 'Drag the ⋮⋮ handle to reorder layers'),
           m('li', 'Use layers panel to add/remove/toggle layers'),
           m('li', 'Click on a layer name to make it active'),
           m('li', 'Eye icon toggles layer visibility'),
-          m('li', 'Only the active layer receives drawing/moving input')
+          m('li', 'Only the active layer receives drawing/moving/resizing input')
         ])
       ]),
 
